@@ -1,0 +1,24 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+
+Vagrant.configure(2) do |config|
+  config.vm.box = "akisys/fbsd-10.2-RELEASE"
+  config.vm.guest = :freebsd
+  config.ssh.shell = 'sh'
+  # config.vm.network "forwarded_port", guest: 80, host: 8080
+  config.vm.network "private_network", ip: "192.168.56.10"
+  config.vm.synced_folder "./", "/vagrant", type: "nfs"
+  # config.vm.provider "virtualbox" do |vb|
+  #   # Customize the amount of memory on the VM:
+  #   vb.memory = "1024"
+  # end
+
+  # Enable provisioning with a shell script. Additional provisioners such as
+  # Puppet, Chef, Ansible, Salt, and Docker are also available. Please see the
+  # documentation for more information about their specific syntax and use.
+  config.vm.provision "shell", inline: <<-SHELL
+    iocage activate zroot
+    (iocage list -r | grep -q '10.2-RELEASE') || (iocage fetch release=10.2-RELEASE)
+    (iocage list | grep -q 'puppetmaster') || (iocage create -b tag=puppetmaster base=10.2-RELEASE allow_sysvipc=1  hostname="puppet" ip4_addr="jailbr0|172.23.100.100")
+  SHELL
+end
