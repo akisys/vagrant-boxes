@@ -8,7 +8,7 @@ function_setupPuppet () {
   fi
   echo "Setting up puppet"
   local UUID=`iocage get host_hostuuid ${JAILNAME}`
-  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install puppet4
+  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install -q puppet4
   if [ "`grep -c '/usr/local/etc/puppet' /iocage/jails/${UUID}/fstab`" == "0" ]; then
     iocage exec puppetmaster mv /usr/local/etc/puppet /usr/local/etc/puppet.dist
     iocage exec puppetmaster mkdir /usr/local/etc/puppet
@@ -54,7 +54,7 @@ function_setupPuppetdb () {
   fi
   echo "Setup puppetdb"
   local UUID=`iocage get host_hostuuid ${JAILNAME}`
-  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install postgresql95-server
+  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install -q postgresql95-server postgresql95-contrib
   local BASEDIR="/iocage/jails/${UUID}/root"
   local PGSQL_HOME="${BASEDIR}/usr/local/pgsql/data"
   local PUPPETDB_HOME="${BASEDIR}/usr/local/etc/puppetdb"
@@ -62,6 +62,7 @@ function_setupPuppetdb () {
   if [ ! -d "$PGSQL_HOME" ]; then
     iocage exec $JAILNAME service postgresql oneinitdb
   fi
+  # start now and keep running
   iocage exec $JAILNAME service postgresql onestart
   if [ `egrep -c "puppetdb" $PGSQL_HOME/pg_hba.conf` -eq 0 ]; then
     echo "Initializing postgresql puppetdb access and database"
@@ -71,7 +72,7 @@ function_setupPuppetdb () {
     iocage exec $JAILNAME sudo -u pgsql psql -c 'CREATE EXTENSION pg_trgm;' puppetdb
     iocage exec $JAILNAME service postgresql onerestart
   fi
-  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install puppetdb4 puppetdb-terminus4
+  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install -q puppetdb4 puppetdb-terminus4
   if `egrep -q "command_args=.*-D.*" $BASEDIR/usr/local/etc/rc.d/puppetdb`; then
     echo "Patching /usr/local/etc/rc.d/puppetdb"
     perl -pe 's/-D[a-z\.\/=]+ //g' $BASEDIR/usr/local/etc/rc.d/puppetdb > /tmp/rc_d_puppetdb
@@ -82,11 +83,12 @@ function_setupPuppetdb () {
     cp /vagrant/setup/puppetdbconf/database.ini $PUPPETDB_HOME/conf.d/database.ini
     iocage exec $JAILNAME puppetdb ssl-setup
   fi
-  iocage exec $JAILNAME service puppetdb onestart
+  # we start later
+  #iocage exec $JAILNAME service puppetdb onestart
   if [ ! -f "$PUPPET_HOME/puppetdb.conf" ]; then
     cp /vagrant/setup/puppetconf/puppetdb.conf $PUPPET_HOME/puppetdb.conf
   fi
-  if [ `egrep -c '^storeconfigs_backend = puppetdb$'` -eq 0 ]; then
+  if [ `egrep -c '^storeconfigs_backend = puppetdb$' $PUPPET_HOME/puppet.conf` -eq 0 ]; then
     echo "storeconfigs = true" >> $PUPPET_HOME/puppet.conf
     echo "storeconfigs_backend = puppetdb" >> $PUPPET_HOME/puppet.conf
     echo "reports = store,puppetdb" >> $PUPPET_HOME/puppet.conf
@@ -101,7 +103,7 @@ function_setupPuppetJail () {
   fi
   echo "Setup '$JAILNAME' jail"
   iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg bootstrap
-  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install vim-lite sudo tmux screen
+  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install -q vim-lite sudo tmux screen
   local UUID=`iocage get host_hostuuid ${JAILNAME}`
   local BASEDIR="/iocage/jails/${UUID}/root"
   (grep -q "$PUPPET_IP $PUPPET_HOSTNAME" $BASEDIR/etc/hosts) || (\
@@ -116,22 +118,51 @@ function_setupPuppetserver () {
     exit 1
   fi
   echo "Setup puppetserver"
-  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install puppetserver
+  iocage exec $JAILNAME env ASSUME_ALWAYS_YES=YES pkg install -q puppetserver
   local UUID=`iocage get host_hostuuid ${JAILNAME}`
   local BASEDIR="/iocage/jails/${UUID}/root"
   local PUPPETSERVER_HOME="${BASEDIR}/usr/local/etc/puppetserver"
+
+  cat > "${BASEDIR}/usr/local/bin/puppetserver_gem" <<.EOF
+#!/bin/sh
+/usr/local/bin/java -cp /usr/local/share/puppetserver/puppetserver.jar clojure.main -m puppetlabs.puppetserver.cli.gem --config /usr/local/etc/puppetserver/conf.d/ \$@
+.EOF
+  chmod +x "${BASEDIR}/usr/local/bin/puppetserver_gem"
   if [ ! -f "$PUPPETSERVER_HOME/conf.d/puppetserver.conf.dist" ]; then
     echo "Setting up puppetserver/conf.d/puppetserver.conf"
     cp $PUPPETSERVER_HOME/conf.d/puppetserver.conf $PUPPETSERVER_HOME/conf.d/puppetserver.conf.dist
     perl -pe 's/^(\s+(master-conf-dir|master-code-dir):).*$/\1 \/usr\/local\/etc\/puppet/' $PUPPETSERVER_HOME/conf.d/puppetserver.conf.dist > $PUPPETSERVER_HOME/conf.d/puppetserver.conf
   fi
-  iocage exec $JAILNAME service puppetserver onestart
+  echo "Installing puppetserver gems"
+  GEMS="\
+    facter\
+    hiera\
+    deep_merge\
+    "
+  INSTALLED_GEMS=`iocage exec $JAILNAME /usr/local/bin/puppetserver_gem list`
+  for _GEM in $GEMS; do
+    if [ `echo "$INSTALLED_GEMS" | grep -c "$_GEM"` -eq 0 ]; then
+      echo "- install $_GEM"
+      iocage exec $JAILNAME /usr/local/bin/puppetserver_gem install $_GEM
+    fi
+  done
+  #iocage exec $JAILNAME service puppetserver onestart
 }
 
 function_activatePuppetmasterServices () {
-  iocage exec $JAILNAME service postgresql onestart
-  iocage exec $JAILNAME service puppetdb onestart
-  iocage exec $JAILNAME service puppetserver onestart
+  local JAILNAME="$1"
+  if [ -z "$JAILNAME" ]; then
+    echo 'No jailname given'
+    exit 1
+  fi
+  local UUID=`iocage get host_hostuuid ${JAILNAME}`
+  local BASEDIR="/iocage/jails/${UUID}/root"
+  echo "Finalizing permissions"
+  iocage exec $JAILNAME chown -R puppet:puppet /var/puppet
+  echo "Bringing all servers up in $JAILNAME"
+  (iocage exec $JAILNAME service postgresql onestatus) || (iocage exec $JAILNAME service postgresql onestart)
+  (iocage exec $JAILNAME service puppetdb onestatus) || (iocage exec $JAILNAME service puppetdb onestart)
+  (iocage exec $JAILNAME service puppetserver onestatus) || (iocage exec $JAILNAME service puppetserver onestart)
 }
 
 # setup jail system
@@ -166,5 +197,6 @@ if [ "$RUN_STATE" == "up" ]; then
   function_setupPuppet $PUPPET_JAILNAME
   function_setupPuppetdb $PUPPET_JAILNAME
   function_setupPuppetserver $PUPPET_JAILNAME
+  function_activatePuppetmasterServices $PUPPET_JAILNAME
 fi
 
