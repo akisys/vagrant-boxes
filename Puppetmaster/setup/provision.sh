@@ -19,19 +19,25 @@ function_setupPuppet () {
   fi
   local CWD=`pwd`
   local TARGET="/iocage/jails/${UUID}/root/usr/local/etc/puppet"
-  echo "$TARGET"
-  if [ ! -d "$TARGET" ]; then
-    mkdir -p "$TARGET"
-  fi
-  if [ ! -f "$TARGET/puppet.conf" ]; then
-    cd  $TARGET
-    mkdir -p environments/production
-    mkdir -p manifests
-    mkdir -p modules
+  echo "Checking puppet directory stucture"
+  [ ! -d "$TARGET" ] && mkdir -p "$TARGET"
+  DIRECTORIES="\
+    environments/production\
+    manifests\
+    modules\
+    "
+  cd  $TARGET
+  for _DIR in $DIRECTORIES; do
+    mkdir -p $_DIR
+  done
+  if [ ! -L "${TARGET}/environments/production/manifests" ]; then
     cd environments/production
-    ln -s ../../manifests manifests
-    ln -s ../../modules modules
-    cd $CWD
+    ln -snf ../../manifests manifests
+    ln -snf ../../modules modules
+  fi
+  cd $CWD
+  if [ ! -f "$TARGET/puppet.conf" ]; then
+    echo "Copying default puppet.conf"
     cp /vagrant/setup/puppetconf/puppet.conf $TARGET/puppet.conf
   fi
   if [ ! -f "$TARGET/hiera.yaml" ]; then
